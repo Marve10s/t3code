@@ -140,6 +140,7 @@ describe("WsRpcAtomClient", () => {
           ...DEFAULT_SERVER_SETTINGS.providers.claudeAgent,
           enabled: false,
         },
+        glm: DEFAULT_SERVER_SETTINGS.providers.glm,
       },
     };
     const requestPromise = runRpc((client) => client(WS_METHODS.serverGetSettings, {}));
@@ -190,6 +191,7 @@ describe("WsRpcAtomClient", () => {
           ...DEFAULT_SERVER_SETTINGS.providers.claudeAgent,
           enabled: false,
         },
+        glm: DEFAULT_SERVER_SETTINGS.providers.glm,
       },
     };
     const registry = AtomRegistry.make();
