@@ -1408,7 +1408,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
       codex: providerStatuses.find((provider) => provider.provider === "codex")?.models ?? [],
       claudeAgent:
         providerStatuses.find((provider) => provider.provider === "claudeAgent")?.models ?? [],
-      glm: providerStatuses.find((provider) => provider.provider === "glm")?.models ?? [],
     }),
     [providerStatuses],
   );
@@ -1423,17 +1422,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
       AVAILABLE_PROVIDER_OPTIONS.filter(
         (option) => lockedProvider === null || option.value === lockedProvider,
       ).flatMap((option) =>
-        modelOptionsByProvider[option.value].map(({ slug, name }) => ({
-          provider: option.value,
-          providerLabel: option.label,
-          slug,
-          name,
-          searchSlug: slug.toLowerCase(),
-          searchName: name.toLowerCase(),
-          searchProvider: option.label.toLowerCase(),
-        })),
+        modelOptionsByProvider[option.value].map(({ slug, name }) => {
+          const providerLabel =
+            providerStatuses.find((provider) => provider.provider === option.value)?.displayName ??
+            option.label;
+          return {
+            provider: option.value,
+            providerLabel,
+            slug,
+            name,
+            searchSlug: slug.toLowerCase(),
+            searchName: name.toLowerCase(),
+            searchProvider: providerLabel.toLowerCase(),
+          };
+        }),
       ),
-    [lockedProvider, modelOptionsByProvider],
+    [lockedProvider, modelOptionsByProvider, providerStatuses],
   );
   const workspaceEntriesQuery = useQuery(
     projectSearchEntriesQueryOptions({

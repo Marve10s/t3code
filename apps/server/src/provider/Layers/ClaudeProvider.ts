@@ -1,3 +1,4 @@
+import * as OS from "node:os";
 import type {
   ClaudeSettings,
   ModelCapabilities,
@@ -6,7 +7,19 @@ import type {
   ServerProviderAuth,
   ServerProviderState,
 } from "@t3tools/contracts";
-import { Cache, Duration, Effect, Equal, Layer, Option, Result, Schema, Stream } from "effect";
+import {
+  Cache,
+  Duration,
+  Effect,
+  Equal,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Result,
+  Schema,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
@@ -36,6 +49,12 @@ const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = {
 };
 
 const PROVIDER = "claudeAgent" as const;
+const ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
+const DEFAULT_CLAUDE_GLM_MODEL_MAPPING = {
+  opus: "glm-4.7",
+  sonnet: "glm-4.7",
+  haiku: "glm-4.5-air",
+} as const;
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-6",
@@ -91,6 +110,107 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     } satisfies ModelCapabilities,
   },
 ];
+
+interface ClaudeGlmIntegration {
+  readonly hasAuthToken: boolean;
+  readonly opusModel: string;
+  readonly sonnetModel: string;
+  readonly haikuModel: string;
+}
+
+function normalizeUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.replace(/\/+$/g, "").toLowerCase() : undefined;
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !globalThis.Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asTrimmedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readClaudeGlmIntegrationFromEnv(
+  env: Record<string, string | undefined>,
+): ClaudeGlmIntegration | undefined {
+  if (normalizeUrl(env.ANTHROPIC_BASE_URL) !== normalizeUrl(ZAI_ANTHROPIC_BASE_URL)) {
+    return undefined;
+  }
+
+  return {
+    hasAuthToken: Boolean(asTrimmedString(env.ANTHROPIC_AUTH_TOKEN)),
+    opusModel:
+      asTrimmedString(env.ANTHROPIC_DEFAULT_OPUS_MODEL) ?? DEFAULT_CLAUDE_GLM_MODEL_MAPPING.opus,
+    sonnetModel:
+      asTrimmedString(env.ANTHROPIC_DEFAULT_SONNET_MODEL) ??
+      DEFAULT_CLAUDE_GLM_MODEL_MAPPING.sonnet,
+    haikuModel:
+      asTrimmedString(env.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? DEFAULT_CLAUDE_GLM_MODEL_MAPPING.haiku,
+  };
+}
+
+function buildClaudeModels(
+  integration: ClaudeGlmIntegration | undefined,
+): ReadonlyArray<ServerProviderModel> {
+  if (!integration) {
+    return BUILT_IN_MODELS;
+  }
+
+  return BUILT_IN_MODELS.map((model) => {
+    let mappedModel: string | undefined;
+    switch (model.slug) {
+      case "claude-opus-4-6":
+        mappedModel = integration.opusModel;
+        break;
+      case "claude-sonnet-4-6":
+        mappedModel = integration.sonnetModel;
+        break;
+      case "claude-haiku-4-5":
+        mappedModel = integration.haikuModel;
+        break;
+    }
+
+    return mappedModel ? { ...model, name: `${model.name} (${mappedModel})` } : model;
+  });
+}
+
+export const readClaudeGlmIntegration = Effect.fn("readClaudeGlmIntegration")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const settingsPath = path.join(OS.homedir(), ".claude", "settings.json");
+  const content = yield* fileSystem
+    .readFileString(settingsPath)
+    .pipe(Effect.orElseSucceed(() => undefined));
+
+  const fileEnv = (() => {
+    if (!content) {
+      return {} as Record<string, string | undefined>;
+    }
+    try {
+      const parsed = JSON.parse(content) as unknown;
+      const envRecord = asPlainRecord(asPlainRecord(parsed)?.env);
+      if (!envRecord) {
+        return {} as Record<string, string | undefined>;
+      }
+      return Object.fromEntries(
+        Object.entries(envRecord).flatMap(([key, value]) => {
+          const stringValue = asTrimmedString(value);
+          return stringValue ? [[key, stringValue]] : [];
+        }),
+      ) as Record<string, string | undefined>;
+    } catch {
+      return {} as Record<string, string | undefined>;
+    }
+  })();
+
+  return readClaudeGlmIntegrationFromEnv({
+    ...fileEnv,
+    ...process.env,
+  });
+});
 
 export function getClaudeModelCapabilities(model: string | null | undefined): ModelCapabilities {
   const slug = model?.trim();
@@ -446,15 +566,22 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 ): Effect.fn.Return<
   ServerProvider,
   ServerSettingsError,
-  ChildProcessSpawner.ChildProcessSpawner | ServerSettingsService
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | Path.Path
+  | ServerSettingsService
 > {
   const claudeSettings = yield* Effect.service(ServerSettingsService).pipe(
     Effect.flatMap((service) => service.getSettings),
     Effect.map((settings) => settings.providers.claudeAgent),
   );
+  const glmIntegration = yield* readClaudeGlmIntegration().pipe(
+    Effect.orElseSucceed(() => undefined),
+  );
   const checkedAt = new Date().toISOString();
+  const displayName = glmIntegration ? "Claude / GLM" : "Claude";
   const models = providerModelsFromSettings(
-    BUILT_IN_MODELS,
+    buildClaudeModels(glmIntegration),
     PROVIDER,
     claudeSettings.customModels,
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
@@ -466,6 +593,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: false,
       checkedAt,
       models,
+      displayName,
       probe: {
         installed: false,
         version: null,
@@ -488,6 +616,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models,
+      displayName,
       probe: {
         installed: !isCommandMissingCause(error),
         version: null,
@@ -506,6 +635,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models,
+      displayName,
       probe: {
         installed: true,
         version: null,
@@ -526,6 +656,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models,
+      displayName,
       probe: {
         installed: true,
         version: parsedVersion,
@@ -535,6 +666,41 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           ? `Claude Agent CLI is installed but failed to run. ${detail}`
           : "Claude Agent CLI is installed but failed to run.",
       },
+    });
+  }
+
+  if (glmIntegration) {
+    return buildServerProvider({
+      provider: PROVIDER,
+      enabled: claudeSettings.enabled,
+      checkedAt,
+      models,
+      displayName,
+      probe: glmIntegration.hasAuthToken
+        ? {
+            installed: true,
+            version: parsedVersion,
+            status: "ready",
+            auth: {
+              status: "authenticated",
+              type: "apiKey",
+              label: "Z.AI GLM Plan",
+            },
+            message:
+              "Configured to use Z.AI's Anthropic-compatible endpoint. Claude model tiers map to GLM models from your Claude settings.",
+          }
+        : {
+            installed: true,
+            version: parsedVersion,
+            status: "error",
+            auth: {
+              status: "unauthenticated",
+              type: "apiKey",
+              label: "Z.AI GLM Plan",
+            },
+            message:
+              "Configured to use Z.AI's Anthropic-compatible endpoint, but ANTHROPIC_AUTH_TOKEN is missing.",
+          },
     });
   }
 
@@ -574,6 +740,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models: resolvedModels,
+      displayName,
       probe: {
         installed: true,
         version: parsedVersion,
@@ -593,6 +760,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       enabled: claudeSettings.enabled,
       checkedAt,
       models: resolvedModels,
+      displayName,
       probe: {
         installed: true,
         version: parsedVersion,
@@ -610,6 +778,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     enabled: claudeSettings.enabled,
     checkedAt,
     models: resolvedModels,
+    displayName,
     probe: {
       installed: true,
       version: parsedVersion,
@@ -627,6 +796,8 @@ export const ClaudeProviderLive = Layer.effect(
   ClaudeProvider,
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     const subscriptionProbeCache = yield* Cache.make({
@@ -640,6 +811,8 @@ export const ClaudeProviderLive = Layer.effect(
       Cache.get(subscriptionProbeCache, binaryPath),
     ).pipe(
       Effect.provideService(ServerSettingsService, serverSettings),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
 

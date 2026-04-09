@@ -113,11 +113,6 @@ const PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
     binaryPlaceholder: "Claude binary path",
     binaryDescription: "Path to the Claude binary",
   },
-  {
-    provider: "glm",
-    title: "GLM (Z.ai)",
-    envVarHint: "GLM_API_KEY",
-  },
 ] as const;
 
 const PROVIDER_STATUS_STYLES = {
@@ -543,14 +538,12 @@ export function GeneralSettingsPanel() {
         DEFAULT_UNIFIED_SETTINGS.providers.claudeAgent.binaryPath ||
       settings.providers.claudeAgent.customModels.length > 0,
     ),
-    glm: Boolean(settings.providers.glm.customModels.length > 0),
   });
   const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
     Record<ProviderKind, string>
   >({
     codex: "",
     claudeAgent: "",
-    glm: "",
   });
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
@@ -1112,7 +1105,9 @@ export function GeneralSettingsPanel() {
           const customModelInput = customModelInputByProvider[providerCard.provider];
           const customModelError = customModelErrorByProvider[providerCard.provider] ?? null;
           const providerDisplayName =
-            PROVIDER_DISPLAY_NAMES[providerCard.provider] ?? providerCard.title;
+            providerCard.liveProvider?.displayName ??
+            PROVIDER_DISPLAY_NAMES[providerCard.provider] ??
+            providerCard.title;
 
           return (
             <div key={providerCard.provider} className="border-t border-border first:border-t-0">

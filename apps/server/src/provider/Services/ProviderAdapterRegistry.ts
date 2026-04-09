@@ -38,5 +38,3 @@ export class ProviderAdapterRegistry extends ServiceMap.Service<
   ProviderAdapterRegistry,
   ProviderAdapterRegistryShape
 >()("t3/provider/Services/ProviderAdapterRegistry") {}
-
-// Dummy comment for workflow testing.

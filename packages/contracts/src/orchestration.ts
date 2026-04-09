@@ -1,5 +1,5 @@
 import { Option, Schema, SchemaIssue, Struct } from "effect";
-import { ClaudeModelOptions, CodexModelOptions, GlmModelOptions } from "./model";
+import { ClaudeModelOptions, CodexModelOptions } from "./model";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -23,7 +23,7 @@ export const ORCHESTRATION_WS_METHODS = {
   replayEvents: "orchestration.replayEvents",
 } as const;
 
-export const ProviderKind = Schema.Literals(["codex", "claudeAgent", "glm"]);
+export const ProviderKind = Schema.Literals(["codex", "claudeAgent"]);
 export type ProviderKind = typeof ProviderKind.Type;
 export const ProviderApprovalPolicy = Schema.Literals([
   "untrusted",
@@ -55,18 +55,7 @@ export const ClaudeModelSelection = Schema.Struct({
 });
 export type ClaudeModelSelection = typeof ClaudeModelSelection.Type;
 
-export const GlmModelSelection = Schema.Struct({
-  provider: Schema.Literal("glm"),
-  model: TrimmedNonEmptyString,
-  options: Schema.optionalKey(GlmModelOptions),
-});
-export type GlmModelSelection = typeof GlmModelSelection.Type;
-
-export const ModelSelection = Schema.Union([
-  CodexModelSelection,
-  ClaudeModelSelection,
-  GlmModelSelection,
-]);
+export const ModelSelection = Schema.Union([CodexModelSelection, ClaudeModelSelection]);
 export type ModelSelection = typeof ModelSelection.Type;
 
 export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);
