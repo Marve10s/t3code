@@ -36,6 +36,7 @@ import {
 } from "./types";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
+import { deriveSidebarAgentCommandStatus } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
 
 export interface EnvironmentState {
@@ -124,6 +125,7 @@ const MAX_THREAD_CHECKPOINTS = 500;
 const MAX_THREAD_PROPOSED_PLANS = 200;
 const MAX_THREAD_ACTIVITIES = 500;
 const EMPTY_THREAD_IDS: ThreadId[] = [];
+const EMPTY_ACTIVITY_IDS: string[] = [];
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -297,6 +299,7 @@ function mapThreadShell(
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    agentCommandStatus: null,
   };
   return {
     shell,
@@ -397,7 +400,28 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
-    left.hasActionableProposedPlan === right.hasActionableProposedPlan
+    left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
+    sidebarAgentCommandStatusesEqual(left.agentCommandStatus, right.agentCommandStatus)
+  );
+}
+
+function sidebarAgentCommandStatusesEqual(
+  left: SidebarThreadSummary["agentCommandStatus"] | undefined,
+  right: SidebarThreadSummary["agentCommandStatus"] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return false;
+  if (left.urls.length !== right.urls.length) return false;
+  return (
+    left.label === right.label &&
+    left.createdAt === right.createdAt &&
+    left.hasLocalUrl === right.hasLocalUrl &&
+    left.primaryUrl?.href === right.primaryUrl?.href &&
+    left.primaryUrl?.url === right.primaryUrl?.url &&
+    left.urls.every((url, index) => {
+      const rightUrl = right.urls[index];
+      return rightUrl?.href === url.href && rightUrl.url === url.url;
+    })
   );
 }
 
@@ -458,6 +482,49 @@ function buildActivitySlice(thread: Thread): {
     byId: Object.fromEntries(
       thread.activities.map((activity) => [activity.id, activity] as const),
     ) as Record<string, OrchestrationThreadActivity>,
+  };
+}
+
+function withSidebarAgentCommandStatus(
+  summary: SidebarThreadSummary,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): SidebarThreadSummary {
+  const agentCommandStatus = deriveSidebarAgentCommandStatus(
+    activities,
+    summary.latestTurn?.turnId ?? null,
+  );
+  return sidebarAgentCommandStatusesEqual(summary.agentCommandStatus, agentCommandStatus)
+    ? summary
+    : {
+        ...summary,
+        agentCommandStatus,
+      };
+}
+
+function updateSidebarAgentCommandStatus(
+  state: EnvironmentState,
+  thread: Pick<Thread, "id" | "latestTurn" | "activities">,
+): EnvironmentState {
+  const existingSummary = state.sidebarThreadSummaryById[thread.id];
+  if (!existingSummary) {
+    return state;
+  }
+  const nextSummary = withSidebarAgentCommandStatus(
+    {
+      ...existingSummary,
+      latestTurn: thread.latestTurn,
+    },
+    thread.activities,
+  );
+  if (nextSummary === existingSummary) {
+    return state;
+  }
+  return {
+    ...state,
+    sidebarThreadSummaryById: {
+      ...state.sidebarThreadSummaryById,
+      [thread.id]: nextSummary,
+    },
   };
 }
 
@@ -671,7 +738,7 @@ function writeThreadState(
     };
   }
 
-  return nextState;
+  return updateSidebarAgentCommandStatus(nextState, nextThread);
 }
 
 /**
@@ -743,11 +810,18 @@ function writeThreadShellState(
       nextThread.summary,
     )
   ) {
+    const activityIds = nextState.activityIdsByThreadId[nextThread.shell.id] ?? EMPTY_ACTIVITY_IDS;
+    const activitiesById = nextState.activityByThreadId[nextThread.shell.id] ?? {};
+    const activities = activityIds.flatMap((id) => {
+      const activity = activitiesById[id];
+      return activity ? [activity] : [];
+    });
+    const summary = withSidebarAgentCommandStatus(nextThread.summary, activities);
     nextState = {
       ...nextState,
       sidebarThreadSummaryById: {
         ...nextState.sidebarThreadSummaryById,
-        [nextThread.shell.id]: nextThread.summary,
+        [nextThread.shell.id]: summary,
       },
     };
   }
