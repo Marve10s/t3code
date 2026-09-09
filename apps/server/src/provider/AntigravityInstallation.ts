@@ -400,6 +400,17 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
       .map((directory) => path.resolve(directory, binary));
   };
 
+  const cliOnPath = Effect.fn("AntigravityInstallation.cliOnPath")(function* (
+    processEnvironment?: NodeJS.ProcessEnv,
+  ) {
+    for (const name of platform === "win32" ? ["agy.exe", "agy.cmd"] : ["agy"]) {
+      for (const candidate of pathCandidates(name, processEnvironment)) {
+        if (yield* executableFile(candidate)) return true;
+      }
+    }
+    return false;
+  });
+
   const resolve: AntigravityInstallationService["resolve"] = Effect.fn(
     "AntigravityInstallation.resolve",
   )(
@@ -426,6 +437,12 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
       for (const candidate of pathCandidates(names.executable, processEnvironment)) {
         const selected = yield* fromExternal(candidate, "path");
         if (selected) return selected;
+      }
+      if (releaseAsset && (yield* cliOnPath(processEnvironment))) {
+        return yield* installationError(
+          "resolve",
+          "The Antigravity CLI is installed, but T3 Code runs the separate Antigravity ACP agent. Install it in this environment or set a custom executable path.",
+        );
       }
       return yield* installationError(
         "resolve",
