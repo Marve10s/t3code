@@ -6,6 +6,7 @@ import {
   HostProcessEnvironment,
   HostProcessPlatform,
 } from "@t3tools/shared/hostProcess";
+import { isCommandAvailable } from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -400,16 +401,12 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
       .map((directory) => path.resolve(directory, binary));
   };
 
-  const cliOnPath = Effect.fn("AntigravityInstallation.cliOnPath")(function* (
-    processEnvironment?: NodeJS.ProcessEnv,
-  ) {
-    for (const name of platform === "win32" ? ["agy.exe", "agy.cmd"] : ["agy"]) {
-      for (const candidate of pathCandidates(name, processEnvironment)) {
-        if (yield* executableFile(candidate)) return true;
-      }
-    }
-    return false;
-  });
+  const cliOnPath = (processEnvironment = environment) =>
+    isCommandAvailable("agy", { env: processEnvironment }).pipe(
+      Effect.provideService(HostProcessPlatform, platform),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+    );
 
   const resolve: AntigravityInstallationService["resolve"] = Effect.fn(
     "AntigravityInstallation.resolve",
