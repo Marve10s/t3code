@@ -3172,6 +3172,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       expected: `API Error: 400 ${"x".repeat(485)}`,
     },
     {
+      name: "a quoted secret crossing the error limit",
+      isError: true,
+      result: `API Error: 400 ${"x".repeat(440)} {"token":"${"synthetic-secret".repeat(100)}"}`,
+      expected: `API Error: 400 ${"x".repeat(440)} {"token":"[REDACTED]"}`,
+    },
+    {
       name: "an empty error",
       isError: true,
       result: "",

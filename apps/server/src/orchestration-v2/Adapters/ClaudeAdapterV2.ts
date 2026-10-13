@@ -2706,7 +2706,7 @@ function providerFailureFromResult(
     message.subtype === "success" &&
     message.terminal_reason === "api_error" &&
     message.result.trim().startsWith("API Error:")
-      ? message.result.trim().slice(0, 500)
+      ? makeProviderFailure({ message: message.result }).message.slice(0, 500)
       : undefined;
   const structuredError = isOverloadedResult(message)
     ? "Claude API is overloaded (529). Try again shortly."
