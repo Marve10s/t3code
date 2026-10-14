@@ -24,6 +24,7 @@ import {
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_RESTART_PENDING_FILE,
   SERVICE_STATE_FILE,
+  SERVICE_UNIT_ENV,
   compareExactServiceVersions,
   parseServiceState,
   serviceStateActiveVersion,
@@ -37,7 +38,6 @@ const BOOT_SERVICE_UNIT_FILE = `${BOOT_SERVICE_NAME}.service`;
 // (com.t3tools.t3code), so launchd and TCC records never collide.
 const BOOT_SERVICE_LAUNCHD_LABEL = "com.t3tools.t3code.service";
 const BOOT_SERVICE_PLIST_FILE = `${BOOT_SERVICE_LAUNCHD_LABEL}.plist`;
-const BOOT_SERVICE_UNIT_ENV = "T3_BOOT_SERVICE_UNIT";
 /** File in the logs dir that receives the service's stdout and stderr. `t3 triage` points agents at it. */
 export const BOOT_SERVICE_LOG_FILE = "boot-service.log";
 
@@ -101,7 +101,7 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
     "Type=simple",
     "WorkingDirectory=%h",
     `Environment=T3CODE_HOME=${quoteSystemdValue(plan.baseDir)}`,
-    `Environment=${BOOT_SERVICE_UNIT_ENV}=${BOOT_SERVICE_UNIT_FILE}`,
+    `Environment=${SERVICE_UNIT_ENV}=${BOOT_SERVICE_UNIT_FILE}`,
     `ExecStart=${plan.program.map(quoteSystemdValue).join(" ")}`,
     // Let the launcher mark an explicit stop before it signals the server.
     // systemd still SIGKILLs the whole cgroup if graceful shutdown times out.
@@ -170,7 +170,7 @@ export function renderBootServicePlist(
     `    <string>${escapeXmlText(options.environmentPath)}</string>`,
     `    <key>T3CODE_HOME</key>`,
     `    <string>${escapeXmlText(plan.baseDir)}</string>`,
-    `    <key>${BOOT_SERVICE_UNIT_ENV}</key>`,
+    `    <key>${SERVICE_UNIT_ENV}</key>`,
     `    <string>${BOOT_SERVICE_PLIST_FILE}</string>`,
     `  </dict>`,
     `  <key>WorkingDirectory</key>`,
@@ -824,7 +824,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     // launcher reads the state file once at startup and the unit only matters
     // on the next start, so that is safe as long as the launcher is not in
     // the middle of a remote update, which is the one time it writes the
-    // state file itself. That case is refused below, before anything is
+    // state file itself (and, once committed, repoints the unit at the target;
+    // it leaves a unit that already names a newer version alone). That case
+    // is refused below, before anything is
     // written, from the same read the downgrade check uses; the stop that
     // normally serialises against the launcher is skipped on purpose.
     const start = options?.start !== false;
