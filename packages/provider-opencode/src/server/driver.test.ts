@@ -12,7 +12,6 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -101,7 +100,7 @@ const createOpenCode1WorkspaceDriver = (client: ReturnType<typeof createOpencode
   );
 
 it.layer(layer)("OpenCodeDriver 1.x workspace commands", (it) => {
-  it.effect("fails a timed-out command probe and loads commands on retry", () =>
+  it.effect("keeps skills and marks commands pending on a timed-out probe, then loads them", () =>
     Effect.gen(function* () {
       const requested = Promise.withResolvers<void>();
       let ready = false;
@@ -116,15 +115,16 @@ it.layer(layer)("OpenCodeDriver 1.x workspace commands", (it) => {
         },
       });
       const instance = yield* createOpenCode1WorkspaceDriver(client);
-      const probe = yield* instance.snapshotForCwd!("/work").pipe(Effect.result, Effect.forkChild);
+      const probe = yield* instance.snapshotForCwd!("/work").pipe(Effect.forkChild);
       yield* Effect.promise(() => requested.promise);
       yield* TestClock.adjust("10 seconds");
 
-      const result = yield* Fiber.join(probe);
-      assert.strictEqual(result._tag, "Failure");
-      if (Result.isFailure(result)) {
-        assert.include(result.failure.detail, "Failed to probe OpenCode commands");
-      }
+      const pending = yield* Fiber.join(probe);
+      assert.deepStrictEqual(
+        pending.skills.map((skill) => skill.name),
+        ["workspace-skill"],
+      );
+      assert.strictEqual(pending.slashCommandsPending, true);
 
       ready = true;
       const workspace = yield* instance.snapshotForCwd!("/work");
@@ -132,10 +132,7 @@ it.layer(layer)("OpenCodeDriver 1.x workspace commands", (it) => {
         workspace.slashCommands.map((command) => command.name),
         ["compact", "hello"],
       );
-      assert.deepStrictEqual(
-        workspace.skills.map((skill) => skill.name),
-        ["workspace-skill"],
-      );
+      assert.notOk(workspace.slashCommandsPending);
     }).pipe(Effect.scoped),
   );
 
@@ -157,6 +154,7 @@ it.layer(layer)("OpenCodeDriver 1.x workspace commands", (it) => {
         workspace.skills.map((skill) => skill.name),
         ["workspace-skill"],
       );
+      assert.notOk(workspace.slashCommandsPending);
     }).pipe(Effect.scoped),
   );
 });

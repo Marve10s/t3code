@@ -410,7 +410,7 @@ export const OpenCodeDriver: ProviderDriver<
             skills: openCodeRuntime.loadOpenCodeSkills(client),
             commands: OpenCodeRuntime.loadOpenCodeCommands(client).pipe(
               Effect.orElseSucceed(() => []),
-              Effect.timeout("10 seconds"),
+              Effect.timeoutOption("10 seconds"),
             ),
           },
           { concurrency: "unbounded" },
@@ -526,7 +526,10 @@ export const OpenCodeDriver: ProviderDriver<
                   Effect.map(([machineSnapshot, { skills, commands }]) => ({
                     ...machineSnapshot,
                     skills: openCodeSkillsToServerProviderSkills(skills),
-                    slashCommands: openCodeCommandsToServerProviderSlashCommands(commands),
+                    slashCommands: openCodeCommandsToServerProviderSlashCommands(
+                      Option.getOrUndefined(commands),
+                    ),
+                    ...(Option.isNone(commands) ? { slashCommandsPending: true } : {}),
                   })),
                   Effect.mapError(
                     (cause) =>
