@@ -19,6 +19,23 @@ export const SERVICE_STOP_MARKER_FILE = ".service-stopping";
     service is known to be behind its unit and status reports it that way. */
 export const SERVICE_RESTART_PENDING_FILE = ".restart-pending";
 
+export function serviceUnitBaseDirOf(contents: string): string | undefined {
+  const systemd = /^Environment=T3CODE_HOME=(.*)$/m.exec(contents)?.[1];
+  if (systemd !== undefined) {
+    const raw = systemd.trim();
+    const unquoted =
+      raw.startsWith('"') && raw.endsWith('"')
+        ? raw.slice(1, -1).replaceAll('\\"', '"').replaceAll("\\\\", "\\")
+        : raw;
+    return unquoted.replaceAll("%%", "%");
+  }
+  const plist = /<key>T3CODE_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(contents)?.[1];
+  if (plist !== undefined) {
+    return plist.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+  }
+  return undefined;
+}
+
 export interface PendingServiceUpdate {
   readonly id: string;
   readonly fromVersion: string;
