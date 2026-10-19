@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { acquireServiceSelectionLock } from "./serviceSelectionLock.ts";
 import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
@@ -707,6 +708,16 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (remaining[0]) return yield* new BootServicePrerequisiteError({ problem: remaining[0] });
   });
 
+  const withSelectionLock = <A, E, R>(selectionPath: string, operation: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () => acquireServiceSelectionLock(selectionPath),
+        catch: (cause) => new BootServiceInstallError({ cause }),
+      }),
+      () => operation,
+      (release) => Effect.sync(release),
+    );
+
   const install = Effect.fn("cloud.boot_service.install")(function* (options?: {
     readonly allowDowngrade?: boolean;
     readonly start?: boolean;
@@ -775,78 +786,87 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
-    // With start=false the service keeps running while its files change. The
-    // launcher reads the state file once at startup and the unit only matters
-    // on the next start, so that is safe as long as the launcher is not in the
-    // middle of a remote update, which is the one time it writes the state file
-    // itself.
+    // Stop outside the selection lock: the launcher may be waiting to acquire it.
     const start = options?.start !== false;
     if (installed && start) {
       yield* runSteps(manager.stop);
     }
 
-    yield* Effect.gen(function* () {
-      if (installed) {
-        const previousStateText = yield* fs.readFileString(statePath).pipe(Effect.option);
-        if (Option.isSome(previousStateText)) {
-          if (serviceStateHasPendingUpdate(previousStateText.value)) {
-            return yield* new BootServiceUpdatePendingError();
+    // State first, then unit. The launcher acquires only one at a time, and a
+    // failure to lock the unit must never prevent its durable update commit.
+    yield* withSelectionLock(
+      statePath,
+      withSelectionLock(
+        unitPath,
+        Effect.gen(function* () {
+          const currentlyInstalled = yield* fs.exists(unitPath);
+          const previousStateText = yield* fs.readFileString(statePath).pipe(Effect.option);
+          if (Option.isSome(previousStateText)) {
+            if (serviceStateHasPendingUpdate(previousStateText.value)) {
+              return yield* new BootServiceUpdatePendingError();
+            }
+            // A remote update can finish after the CLI checks status. Read its
+            // final version after the launcher stops and before changing files.
+            const installedVersion = serviceStateActiveVersion(previousStateText.value);
+            if (
+              installedVersion !== undefined &&
+              options?.allowDowngrade !== true &&
+              compareExactServiceVersions(input.cliVersion, installedVersion) < 0
+            ) {
+              return yield* new BootServiceDowngradeRefusedError({
+                installedVersion,
+                targetVersion: input.cliVersion,
+              });
+            }
           }
-          // A remote update can finish after the CLI checks status. Read its
-          // final version after the launcher stops and before changing files.
-          const installedVersion = serviceStateActiveVersion(previousStateText.value);
-          if (
-            installedVersion !== undefined &&
-            options?.allowDowngrade !== true &&
-            compareExactServiceVersions(input.cliVersion, installedVersion) < 0
-          ) {
-            return yield* new BootServiceDowngradeRefusedError({
-              installedVersion,
-              targetVersion: input.cliVersion,
-            });
+          yield* fs
+            .makeDirectory(path.dirname(unitPath), { recursive: true })
+            .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
+          if (!start && (currentlyInstalled || Option.isSome(previousStateText))) {
+            // Written first: once the files below name the new version, the running
+            // service is behind them, and a failure between the two writes must not
+            // leave it looking current.
+            yield* fs.writeFileString(restartPendingPath, `${input.cliVersion}\n`, { mode: 0o600 });
           }
-        }
-      }
-      yield* fs
-        .makeDirectory(path.dirname(unitPath), { recursive: true })
-        .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
-      if (!start && installed) {
-        // Written first: once the files below name the new version, the running
-        // service is behind them, and a failure between the two writes must not
-        // leave it looking current.
-        yield* fs.writeFileString(restartPendingPath, `${input.cliVersion}\n`, { mode: 0o600 });
-      }
-      yield* writeDurably(
-        statePath,
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned document.
-        `${JSON.stringify(
-          {
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: input.cliVersion,
-          } satisfies ServiceState,
-          null,
-          2,
-        )}\n`,
-      );
-      if (!start && installed) {
-        // The launcher only writes this file while a remote update is in
-        // flight. One that began after the check above lands either before
-        // this write (then the launcher's copy in memory is what it keeps
-        // acting on, and its next write puts its own outcome back) or after
-        // it, which this read catches: the file no longer says what was just
-        // written, so stop here before repointing the unit.
-        const written = yield* fs.readFileString(statePath);
-        if (serviceStateActiveVersion(written) !== input.cliVersion) {
-          return yield* new BootServiceUpdatePendingError();
-        }
-      }
-      yield* writeDurably(unitPath, manager.render(plan));
-
-      if (start) {
-        yield* runSteps(manager.activate);
-        yield* fs.remove(restartPendingPath, { force: true });
-      }
-    }).pipe(
+          yield* writeDurably(
+            statePath,
+            // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned document.
+            `${JSON.stringify(
+              {
+                protocol: SERVICE_LAUNCHER_PROTOCOL,
+                activeVersion: input.cliVersion,
+              } satisfies ServiceState,
+              null,
+              2,
+            )}\n`,
+          );
+          if (!start && (currentlyInstalled || Option.isSome(previousStateText))) {
+            const written = yield* fs.readFileString(statePath);
+            if (serviceStateActiveVersion(written) !== input.cliVersion) {
+              return yield* new BootServiceUpdatePendingError();
+            }
+          }
+          yield* writeDurably(unitPath, manager.render(plan));
+        }),
+      ),
+    ).pipe(
+      Effect.andThen(
+        Effect.gen(function* () {
+          if (start) {
+            yield* runSteps(manager.activate);
+            yield* withSelectionLock(
+              statePath,
+              Effect.gen(function* () {
+                // A concurrent deferred install may now be waiting for a newer restart.
+                const awaited = yield* fs.readFileString(restartPendingPath).pipe(Effect.option);
+                if (Option.isSome(awaited) && awaited.value.trim() === input.cliVersion) {
+                  yield* fs.remove(restartPendingPath, { force: true });
+                }
+              }),
+            );
+          }
+        }),
+      ),
       Effect.mapError((cause) =>
         cause._tag === "PlatformError" ? new BootServiceInstallError({ cause }) : cause,
       ),
