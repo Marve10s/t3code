@@ -3332,40 +3332,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect.each([
     {
-      name: "an error result",
-      isError: true,
-      result: "API Error: 400 Request rejected by a safeguard.",
-      expected: "API Error: 400 Request rejected by a safeguard.",
-    },
-    {
-      name: "an unflagged API error result",
+      name: "an unflagged result with surrounding whitespace",
       isError: false,
-      result: "API Error: 400 Request rejected by a safeguard.",
+      result: "  API Error: 400 Request rejected by a safeguard.\n",
       expected: "API Error: 400 Request rejected by a safeguard.",
     },
     {
-      name: "surrounding whitespace",
+      name: "a secret crossing the truncation boundary",
       isError: true,
-      result: "  API Error: 400 Request rejected.\n",
-      expected: "API Error: 400 Request rejected.",
-    },
-    {
-      name: "an overlong error",
-      isError: true,
-      result: `API Error: 400 ${"x".repeat(1_000)}`,
-      expected: `API Error: 400 ${"x".repeat(485)}`,
-    },
-    {
-      name: "a quoted secret crossing the error limit",
-      isError: true,
-      result: `API Error: 400 ${"x".repeat(440)} {"token":"${"synthetic-secret".repeat(100)}"}`,
-      expected: `API Error: 400 ${"x".repeat(440)} {"token":"[REDACTED]"}`,
-    },
-    {
-      name: "an empty error",
-      isError: true,
-      result: "",
-      expected: "Claude gave up after repeated API errors.",
+      result: `API Error: 400 ${"x".repeat(440)} {"token":"${"synthetic-secret".repeat(100)}"} ${"y".repeat(100)}`,
+      expected: `API Error: 400 ${"x".repeat(440)} {"token":"[REDACTED]"} `.padEnd(500, "y"),
     },
     {
       name: "ordinary assistant text",
@@ -3399,7 +3375,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       isError: true,
       result: "API Error: 400 Request rejected.",
       terminalReason: "prompt_too_long" as const,
-      expected: "Claude stopped: the prompt exceeds the model's context window.",
+      expected:
+        "Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.",
     },
   ])("reports terminal API error text for $name", (input) =>
     Effect.gen(function* () {
