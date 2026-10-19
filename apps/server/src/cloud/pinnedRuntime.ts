@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -120,17 +121,11 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
   step: string,
   onProgress?: (progress: PinnedRuntimeProgress) => void,
 ) {
-  // The install lock is held for the whole transaction, so a stalled download
-  // must fail rather than block every other caller. A slow transfer that keeps
-  // delivering bytes is healthy, so the limit applies to each wait for the
-  // response or for the next chunk, not to the download as a whole.
-  const stalled = () => new PinnedRuntimeInstallError({ step: `${step} (timed out)` });
+  // Bound stalls while holding the install lock, but allow transfers that keep
+  // receiving bytes to finish regardless of their total duration.
   return yield* httpClient.execute(HttpClientRequest.get(url)).pipe(
     Effect.flatMap(HttpClientResponse.filterStatusOk),
-    Effect.timeoutOrElse({
-      duration: PINNED_RUNTIME_DOWNLOAD_STALL_TIMEOUT,
-      orElse: () => Effect.fail(stalled()),
-    }),
+    Effect.timeout(PINNED_RUNTIME_DOWNLOAD_STALL_TIMEOUT),
     Effect.flatMap(
       Effect.fn(function* (response) {
         const length = Number(response.headers["content-length"]);
@@ -140,7 +135,7 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
         const chunks = yield* response.stream.pipe(
           Stream.timeoutOrElse({
             duration: PINNED_RUNTIME_DOWNLOAD_STALL_TIMEOUT,
-            orElse: () => Stream.fail(stalled()),
+            orElse: () => Stream.fail(new Cause.TimeoutError()),
           }),
           Stream.tap((chunk) =>
             Effect.sync(() => {
@@ -162,10 +157,12 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
         return bytes;
       }),
     ),
-    Effect.mapError((cause) =>
-      cause._tag === "PinnedRuntimeInstallError"
-        ? cause
-        : new PinnedRuntimeInstallError({ step, cause }),
+    Effect.mapError(
+      (cause) =>
+        new PinnedRuntimeInstallError({
+          step: cause._tag === "TimeoutError" ? `${step} (timed out)` : step,
+          cause,
+        }),
     ),
   );
 });
