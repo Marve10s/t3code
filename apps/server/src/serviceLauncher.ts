@@ -623,16 +623,23 @@ export class Launcher {
     // A fresh launcher means servers are running again: any stop marker from
     // a previous explicit stop is stale and must not make a future update
     // handoff release its tunnel. A restart deferred by `t3 update` is done
-    // no matter who restarted the service, but only once this launcher is
-    // the version the marker waits for: a launcher that came up between the
-    // CLI writing the marker and writing the new state still runs the old
-    // version, and the marker has to outlive it.
+    // no matter who restarted the service, once this launcher serves the
+    // persisted selection and satisfies the awaited version.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
     const restartPending = restartPendingPath(this.#baseDir);
     const release = await acquireServiceSelectionLock(this.#statePath);
     try {
+      const selected = await readServiceState(this.#statePath);
       const awaitedVersion = await NodeFSP.readFile(restartPending, "utf8").catch(() => undefined);
-      if (awaitedVersion?.trim() === this.#state.activeVersion) {
+      const awaited = awaitedVersion?.trim();
+      if (
+        selected.activeVersion === this.#state.activeVersion &&
+        selected.update?.id === this.#state.update?.id &&
+        selected.update?.status === this.#state.update?.status &&
+        awaited !== undefined &&
+        isExactServiceVersion(awaited) &&
+        compareExactServiceVersions(awaited, this.#state.activeVersion) <= 0
+      ) {
         await NodeFSP.rm(restartPending, { force: true }).catch(() => undefined);
       }
     } finally {
