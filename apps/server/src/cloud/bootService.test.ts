@@ -513,6 +513,8 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
   it.effect("install with start=false rewrites the files and marks a restart pending", () =>
     Effect.gen(function* () {
       const { service, fs, statePath, commands, makeService } = yield* makeHarness();
+      const path = yield* Path.Path;
+      const restartPendingPath = path.join(path.dirname(statePath), SERVICE_RESTART_PENDING_FILE);
       yield* service.install();
       commands.length = 0;
 
@@ -532,11 +534,19 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const status = yield* newer.status;
       expect(status.current).toBe(false);
       expect(status.problems).toContain("restart-pending");
+      expect(yield* fs.readFileString(restartPendingPath)).toBe("1.2.4\n");
 
       commands.length = 0;
-      expect(yield* newer.restart).toBe(true);
-      expect((yield* newer.status).problems).not.toContain("restart-pending");
-      expect((yield* newer.status).current).toBe(true);
+      const latest = yield* makeService(undefined, "1.2.5");
+      yield* latest.install({ start: true });
+      expect(parseServiceState(yield* fs.readFileString(statePath))).toEqual({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.2.5",
+      });
+      expect(yield* fs.readFileString(plan.unitPath)).toContain("versions/1.2.5/t3");
+      expect(commands).toContain("systemctl --user restart t3code.service");
+      expect.soft((yield* latest.status).current).toBe(true);
+      expect.soft(yield* fs.exists(restartPendingPath)).toBe(false);
     }),
   );
 
