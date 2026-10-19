@@ -131,11 +131,11 @@ it.layer(layer)("OpenCodeDriver 1.x workspace commands", (it) => {
         workspace.slashCommands.map((command) => command.name),
         ["compact", "hello"],
       );
-      assert.notOk(workspace.slashCommandsPending);
+      assert.strictEqual(workspace.slashCommandsPending, false);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("keeps skills and the built-in command when the SDK returns an error", () =>
+  it.effect("keeps skills and defers command fallback to provider health on an SDK error", () =>
     Effect.gen(function* () {
       const client = createOpencodeClient({
         baseUrl: "http://127.0.0.1:4096",
@@ -153,7 +153,7 @@ it.layer(layer)("OpenCodeDriver 1.x workspace commands", (it) => {
         workspace.skills.map((skill) => skill.name),
         ["workspace-skill"],
       );
-      assert.notOk(workspace.slashCommandsPending);
+      assert.strictEqual(workspace.slashCommandsPending, undefined);
     }).pipe(Effect.scoped),
   );
 });
