@@ -658,9 +658,12 @@ export class Launcher {
     if (update?.status !== "pending") {
       if (update !== undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
-        await this.#repointServiceUnit(this.#state.activeVersion);
       }
-      await this.#startChild(this.#state.activeVersion, "active", update);
+      try {
+        await this.#startChild(this.#state.activeVersion, "active", update);
+      } finally {
+        if (update !== undefined) await this.#repointServiceUnit(this.#state.activeVersion);
+      }
       return;
     }
     if (await databaseRestorePending(this.#baseDir, update)) {
