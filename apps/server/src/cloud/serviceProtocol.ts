@@ -5,35 +5,40 @@ import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 // remote updates replace its child, so cannot add these launcher guarantees.
 export const SERVICE_LAUNCHER_PROTOCOL = 4 as const;
 export const SERVICE_LAUNCHER_CONTEXT_ENV = "T3_SERVICE_LAUNCHER_CONTEXT";
+export const SERVICE_ENV_FILE = "service.env";
 export const SERVICE_STATE_FILE = "service-state.json";
 /** Set by the unit or launch agent to its own file name, so the launcher can
     find the definition that started it. */
 export const SERVICE_UNIT_ENV = "T3_BOOT_SERVICE_UNIT";
-/** Written by the launcher just before an explicit stop kills its child, so
-    the child can tell "the service is going away" from "the launcher is about
-    to start my replacement" while a pending update is recorded. */
+/** Written before explicit stop to distinguish shutdown from update handoff. */
 export const SERVICE_STOP_MARKER_FILE = ".service-stopping";
-/** Written by `t3 update` when the unit was repointed at a new version but the
-    running service was deliberately left on the old one. The launcher removes
-    it when it starts (whoever restarted the service), so while it exists the
-    service is known to be behind its unit and status reports it that way. */
+/** Marks a repointed unit whose service still runs the old version; launcher startup clears it. */
 export const SERVICE_RESTART_PENDING_FILE = ".restart-pending";
+
+const unquoteSystemdValue = (raw: string) =>
+  (raw.startsWith('"') && raw.endsWith('"')
+    ? raw.slice(1, -1).replaceAll('\\"', '"').replaceAll("\\\\", "\\")
+    : raw
+  ).replaceAll("%%", "%");
+
+const unescapeXmlText = (value: string) =>
+  value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
 
 export function serviceUnitBaseDirOf(contents: string): string | undefined {
   const systemd = /^Environment=T3CODE_HOME=(.*)$/m.exec(contents)?.[1];
-  if (systemd !== undefined) {
-    const raw = systemd.trim();
-    const unquoted =
-      raw.startsWith('"') && raw.endsWith('"')
-        ? raw.slice(1, -1).replaceAll('\\"', '"').replaceAll("\\\\", "\\")
-        : raw;
-    return unquoted.replaceAll("%%", "%");
-  }
+  if (systemd !== undefined) return unquoteSystemdValue(systemd.trim());
   const plist = /<key>T3CODE_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(contents)?.[1];
-  if (plist !== undefined) {
-    return plist.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
-  }
-  return undefined;
+  return plist === undefined ? undefined : unescapeXmlText(plist);
+}
+
+/** The executable an installed unit or plist starts: the launcher's runtime. */
+export function serviceUnitProgramOf(contents: string): string | undefined {
+  const systemd = /^ExecStart=("(?:\\.|[^"\\])*"|\S+)/m.exec(contents)?.[1];
+  if (systemd !== undefined) return unquoteSystemdValue(systemd);
+  const plist = /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(
+    contents,
+  )?.[1];
+  return plist === undefined ? undefined : unescapeXmlText(plist);
 }
 
 export interface PendingServiceUpdate {
