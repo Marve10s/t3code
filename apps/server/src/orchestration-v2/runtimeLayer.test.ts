@@ -5191,12 +5191,12 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect("keeps a limited provider's queue held after another provider completes a turn", () =>
+  it.effect("holds a limited provider's queue through another provider's turn until reset", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
-      const threadId = ThreadId.make("runtime-layer-queue-limit-other-provider");
-      const otherSelection = { instanceId: alternateInstanceId, model: "gpt-5.5" };
+      const threadId = ThreadId.make("runtime-layer-queue-limit-switch");
+      const switchedSelection = { instanceId: alternateInstanceId, model: "gpt-5.5" };
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`${threadId}:create`),
@@ -5204,7 +5204,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         createdBy: "user",
         creationSource: "web",
         projectId: ProjectId.make(`${threadId}:project`),
-        title: "Limited queue",
+        title: "Limit switch",
         modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
@@ -5212,24 +5212,24 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         worktreePath: process.cwd(),
       });
       const send = (
-        index: number,
-        selection: ModelSelection,
+        name: string,
+        selection: typeof modelSelection | typeof switchedSelection,
         type: "start_immediately" | "queue_after_active",
       ) =>
         orchestrator.dispatch({
           type: "message.dispatch",
-          commandId: CommandId.make(`${threadId}:${index}`),
+          commandId: CommandId.make(`${threadId}:${name}`),
           threadId,
-          messageId: MessageId.make(`${threadId}:${index}`),
-          text: `Prompt ${index}`,
+          messageId: MessageId.make(`${threadId}:${name}`),
+          text: name,
           attachments: [],
           createdBy: "user",
           creationSource: "web",
           modelSelection: selection,
           dispatchMode: { type },
         });
-      yield* send(0, modelSelection, "start_immediately");
-      yield* send(1, modelSelection, "queue_after_active");
+      yield* send("limited", modelSelection, "start_immediately");
+      yield* send("queued", modelSelection, "queue_after_active");
       const [limited, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs;
       assert.isDefined(limited);
       assert.isDefined(queued);
@@ -5265,7 +5265,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
                 message: "Usage limit reached",
                 code: "usage_limit",
                 retryable: null,
-                resetAt: DateTime.formatIso(DateTime.add(now, { days: 5 })),
+                resetAt: DateTime.formatIso(DateTime.add(now, { hours: 1 })),
               },
             },
           },
@@ -5280,27 +5280,31 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           },
         ],
       });
-      yield* send(2, otherSelection, "start_immediately");
-      const other = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1);
-      assert.equal(other?.providerInstanceId, alternateInstanceId);
+
+      // A message on another provider starts ahead of the held queue and
+      // completes there.
+      yield* send("switch", switchedSelection, "start_immediately");
+      const switched = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.userMessageId === MessageId.make(`${threadId}:switch`),
+      );
+      assert.equal(switched?.status, "starting");
       yield* eventSink.write({
         events: [
           {
-            id: EventId.make(`${threadId}:other-completed`),
+            id: EventId.make(`${threadId}:switch:completed`),
             type: "run.updated",
             threadId,
-            runId: other!.id,
-            providerInstanceId: alternateInstanceId,
+            runId: switched!.id,
+            providerInstanceId: switched!.providerInstanceId,
             occurredAt: now,
-            payload: { ...other!, status: "completed", completedAt: now },
+            payload: { ...switched!, status: "completed", completedAt: now },
           },
         ],
       });
 
       yield* orchestrator.resumeQueuedRuns;
-
-      const after = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(after.runs.find((run) => run.id === queued.id)?.status, "queued");
+      const held = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(held.runs.find((run) => run.id === queued.id)?.status, "queued");
       const blocked = yield* orchestrator
         .dispatch({
           type: "queue.resume",
@@ -5309,6 +5313,14 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         })
         .pipe(Effect.flip);
       assert.equal(blocked._tag, "OrchestratorDispatchError");
+
+      // Once the reported reset passes, the queued message starts on its own provider.
+      yield* TestClock.adjust("61 minutes");
+      yield* orchestrator.resumeQueuedRuns;
+      const reset = yield* orchestrator.getThreadProjection(threadId);
+      const resumed = reset.runs.find((run) => run.id === queued.id);
+      assert.equal(resumed?.status, "starting");
+      assert.deepEqual(resumed?.modelSelection, modelSelection);
     }),
   );
 
