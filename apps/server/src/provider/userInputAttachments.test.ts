@@ -326,7 +326,7 @@ describe("question answer paths", () => {
     ],
     [
       "tracked deletion table",
-      String.raw`{\rtf1\ansi\trowd\cellx1000\cellx2000\intbl A\deleted\cell\deleted0 B\cell\deleted\row\deleted0 C\cell}`,
+      String.raw`{\rtf1\ansi\trowd\cellx1000\cellx2000\intbl A\deleted X\cell\deleted0 B\cell\deleted Y\row\deleted0 C\cell}`,
       "A\tB\t\nC",
     ],
     [
